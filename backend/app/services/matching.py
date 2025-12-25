@@ -2,13 +2,14 @@ import pandas as pd
 from bert_score import score
 from typing import Dict, List
 import torch
+from resume_parser import ParsedResume
 
 
-def create_resume_text(resume_profile: Dict) -> str:
+def create_resume_text(resume: ParsedResume) -> str:
     """Create a concatenated text representation of the resume."""
-    skills = " ".join(resume_profile.get("skills", []))
-    interests = " ".join(resume_profile.get("interests", []))
-    experiences = " ".join(resume_profile.get("experiences", []))
+    skills = " ".join(resume.skills_section)
+    
+    experiences = " ".join(resume.experience_section)
     
     return f"{skills} {interests} {experiences}".strip()
 
