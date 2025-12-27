@@ -11,7 +11,7 @@ def create_resume_text(resume: ParsedResume) -> str:
     
     experiences = " ".join(resume.experience_section)
     
-    return f"{skills} {interests} {experiences}".strip()
+    return f"skills: {skills}  experiences: {experiences}".strip()
 
 
 def create_professor_text(professor_row: pd.Series) -> str:
@@ -25,7 +25,7 @@ def create_professor_text(professor_row: pd.Series) -> str:
 
 
 def rank_professors(
-    resume_profile: Dict, professors_df: pd.DataFrame, top_k: int = 3
+    resume_profile: ParsedResume, professors_df: pd.DataFrame, top_k: int = 3
 ) -> List[Dict]:
     """
     Rank professors by semantic similarity to resume using BERTScore.
@@ -42,11 +42,9 @@ def rank_professors(
         return []
     
     # Create reference text from resume
-    resume_text = create_resume_text(resume_profile)
+    resume_text= create_resume_text(resume_profile)
     
-    if not resume_text.strip():
-        # Fallback: use raw text if available
-        resume_text = resume_profile.get("raw_text", "")[:1000]
+  
     
     # Create candidate texts from professors
     candidate_texts = [

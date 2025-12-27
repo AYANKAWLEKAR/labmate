@@ -107,7 +107,9 @@ DATABASE_URL="postgresql://user:password@localhost:5432/labmate"
 NEXTAUTH_SECRET="generate-a-random-secret-here"
 NEXTAUTH_URL="http://localhost:3000"
 
-# GitHub OAuth (optional)
+# OAuth Providers (optional)
+GOOGLE_CLIENT_ID="your-google-client-id"
+GOOGLE_CLIENT_SECRET="your-google-client-secret"
 GITHUB_CLIENT_ID="your-github-client-id"
 GITHUB_CLIENT_SECRET="your-github-client-secret"
 

@@ -38,7 +38,7 @@ model User {
   name                String?
   email               String?   @unique
   emailVerified       DateTime?
-  image               String?
+  
   hashedPassword      String?
   emailsSent          Int       @default(0)
   contactedProfessors Json?
