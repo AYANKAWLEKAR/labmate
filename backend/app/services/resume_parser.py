@@ -406,9 +406,10 @@ def parse_resume(pdf_bytes: bytes) -> Dict:
         }
     """
     parser = ResumeParser()
+    full_text, block_info = parser.extract_text_from_pdf(pdf_bytes)
     resume= parser.parse(pdf_bytes)
     print_results(resume)
-    return resume
+    return resume, full_text
     # Extract raw text
     # resume_parser=ResumeParser()
     # full_text, block_info=resume_parser.extract_text_from_pdf(pdf_bytes)

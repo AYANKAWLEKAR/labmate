@@ -1,13 +1,30 @@
-import { NextAuthOptions } from "next-auth";
+import type { NextAuthConfig } from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "./prisma";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GitHubProvider from "next-auth/providers/github";
+import GoogleProvider from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 
-export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma) as any,
+// Only use database adapter if DATABASE_URL is configured
+// Otherwise, NextAuth will use JWT sessions (but adapter is required for OAuth)
+let adapter: any;
+try {
+  if (process.env.DATABASE_URL) {
+    adapter = PrismaAdapter(prisma) as any;
+  }
+} catch (error) {
+  console.warn("Prisma adapter initialization failed:", error);
+  // Will fall back to JWT if adapter fails
+}
+
+export const authOptions = {
+  adapter,
   providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID || "",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+    }),
     GitHubProvider({
       clientId: process.env.GITHUB_CLIENT_ID || "",
       clientSecret: process.env.GITHUB_CLIENT_SECRET || "",
@@ -32,8 +49,8 @@ export const authOptions: NextAuthOptions = {
         }
 
         const isPasswordValid = await bcrypt.compare(
-          credentials.password,
-          user.hashedPassword
+          credentials.password as string,
+          user.hashedPassword as string
         );
 
         if (!isPasswordValid) {
@@ -50,18 +67,18 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   session: {
-    strategy: "database",
+    strategy: adapter ? "database" : "jwt",
   },
   pages: {
     signIn: "/auth/signin",
   },
   callbacks: {
-    async session({ session, user }) {
+    async session({ session, user }: { session: any; user: any }) {
       if (session.user) {
         session.user.id = user.id;
       }
       return session;
     },
   },
-};
+} satisfies NextAuthConfig;
 

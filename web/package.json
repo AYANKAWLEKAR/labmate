@@ -12,27 +12,35 @@
     "prisma:studio": "prisma studio"
   },
   "dependencies": {
-    "next": "14.0.4",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "next-auth": "^5.0.0-beta.4",
     "@auth/prisma-adapter": "^2.0.0",
     "@prisma/client": "^5.7.1",
+    "@radix-ui/react-label": "^2.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
     "bcryptjs": "^2.4.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.562.0",
+    "next": "14.0.4",
+    "next-auth": "^5.0.0-beta.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "shadcn": "^3.6.2",
+    "shadcn-ui": "^0.9.5",
+    "tailwind-merge": "^3.4.0",
+    "tailwindcss-animate": "^1.0.7",
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "@types/bcryptjs": "^2.4.6",
-    "typescript": "^5",
-    "prisma": "^5.7.1",
+    "autoprefixer": "^10.0.1",
     "eslint": "^8",
     "eslint-config-next": "14.0.4",
-    "tailwindcss": "^3.3.0",
     "postcss": "^8",
-    "autoprefixer": "^10.0.1"
+    "prisma": "^5.7.1",
+    "tailwindcss": "^3.3.0",
+    "typescript": "^5"
   }
 }
-

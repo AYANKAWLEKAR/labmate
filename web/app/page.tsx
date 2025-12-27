@@ -2,7 +2,7 @@
 
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const INSTITUTIONS = [
   "Rutgers",
@@ -47,6 +47,13 @@ export default function HomePage() {
 
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
+  // Redirect to sign-in if unauthenticated (use useEffect to avoid calling during render)
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push("/auth/signin");
+    }
+  }, [status, router]);
+
   if (status === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-900">
@@ -56,7 +63,6 @@ export default function HomePage() {
   }
 
   if (status === "unauthenticated") {
-    router.push("/auth/signin");
     return null;
   }
 
