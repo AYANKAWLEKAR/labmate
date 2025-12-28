@@ -20,6 +20,7 @@ try {
 
 export const authOptions = {
   adapter,
+  secret: process.env.NEXTAUTH_SECRET,
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || "",
