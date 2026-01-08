@@ -1,4 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -9,10 +10,27 @@ from .services.resume_parser import parse_resume
 from .services.scraper import scrape_institutions
 from .services.matching import rank_professors
 from .services.email_generator import generate_cold_email
+from .db import get_prisma, close_prisma
 
 load_dotenv()
 
 app = FastAPI(title="Labmate API", version="1.0.0")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup Logic ---
+    """Initialize Prisma connection on startup."""
+    await get_prisma()
+    
+    yield  # The app runs while this yield is active
+    
+    # --- Shutdown Logic ---
+    """Close Prisma connection on shutdown."""
+    await close_prisma()
+
+app = FastAPI(title="Labmate API", version="1.0.0", lifespan=lifespan)
+
 
 # CORS middleware
 app.add_middleware(
@@ -67,10 +85,12 @@ async def health_check():
 async def match_professors(
     institutions: List[str] = Query(..., description="List of institutions to search"),
     resume: UploadFile = File(..., description="Resume PDF file"),
+    user_id: Optional[str] = Header(None, alias="X-User-Id", description="User ID from session"),
 ):
     """
     Match user's resume with professors from selected institutions.
     Returns top 3 matches ranked by semantic similarity.
+    Also saves the parsed resume to the database if user_id is provided.
     """
     # Validate institutions
     invalid = [inst for inst in institutions if inst not in ALLOWED_INSTITUTIONS]
@@ -85,9 +105,17 @@ async def match_professors(
     if not resume_bytes:
         raise HTTPException(status_code=400, detail="Resume file is empty")
 
-    # Parse resume
+    # Parse resume and save to database if user_id is provided
     try:
-        resume_profile = parse_resume(resume_bytes)
+        if user_id:
+            resume_profile = await parse_resume(resume_bytes, user_id)
+        else:
+            # Fallback: parse without saving to database
+            from io import BytesIO
+            from .services.resume_parser import ResumeParser
+            parser = ResumeParser()
+            pdf_file = BytesIO(resume_bytes)
+            resume_profile = parser.parse(pdf_file)
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to parse resume: {str(e)}"

@@ -77,6 +77,9 @@ export default function HomePage() {
 
       const response = await fetch(url, {
         method: "POST",
+        headers: {
+          ...(session?.user?.id && { "X-User-Id": session.user.id }),
+        },
         body: formData,
       });
 

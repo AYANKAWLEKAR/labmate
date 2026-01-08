@@ -7,9 +7,9 @@ from resume_parser import ParsedResume
 
 def create_resume_text(resume: ParsedResume) -> str:
     """Create a concatenated text representation of the resume."""
-    skills = " ".join(resume.skills_section)
+    skills = " ".join(resume.skills_raw_text)
     
-    experiences = " ".join(resume.experience_section)
+    experiences = " ".join(resume.experience_raw_text)
     
     return f"skills: {skills}  experiences: {experiences}".strip()
 

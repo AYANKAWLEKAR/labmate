@@ -41,8 +41,21 @@ model User {
   hashedPassword      String?
   emailsSent          Int       @default(0)
   contactedProfessors Json?
+  researchInterests   String[]
+  resume              Resume?   @relation("UserResume")
   Account             Account[]
   Session             Session[]
+}
+
+model Resume {
+  id          String   @id @default(uuid())
+  rawpdf      String?
+  skills      String[]
+  experiences Json?
+  userId      String   @unique
+  User        User     @relation("UserResume", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("resumes")
 }
 
 model VerificationToken {

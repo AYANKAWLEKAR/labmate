@@ -7,6 +7,8 @@ from collections import defaultdict
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from dataclasses import dataclass
+import base64
+import json
 
 
 @dataclass
@@ -393,32 +395,61 @@ def print_results(result: ParsedResume) -> None:
 
 
 
-def parse_resume(pdf_bytes: bytes) -> Dict:
+async def parse_resume(pdf_bytes: bytes, user_id: str) -> ParsedResume:
     """
     Parse resume PDF and extract structured information.
+    Saves the parsed resume data to the database for the given user.
+    
+    Args:
+        pdf_bytes: PDF file bytes
+        user_id: User ID to associate the resume with
     
     Returns:
-        {
-            "raw_text": str,
-            "skills": List[str],
-            "interests": List[str],
-            "experiences": List[str]
-        }
+        ParsedResume object with extracted information
     """
+    from ..db import get_prisma
+    
     parser = ResumeParser()
-    full_text, block_info = parser.extract_text_from_pdf(pdf_bytes)
-    resume= parser.parse(pdf_bytes)
-    print_results(resume)
-    return resume, full_text
-    # Extract raw text
-    # resume_parser=ResumeParser()
-    # full_text, block_info=resume_parser.extract_text_from_pdf(pdf_bytes)
-    # sections=resume_parser.split_into_sections(full_text)
-    # sorted_sections=resume_parser.sort_sections(sections)
-    # keywords=resume_parser.extract_keywords(sorted_sections)
-    # return {
-    #     "raw_text": full_text,
-    #     "skills": keywords["skills"],
-    #     "interests": keywords["interests"],
-    #     "experiences": keywords["experiences"]
-    # }
+    
+    # Create a file-like object from bytes for parsing
+    from io import BytesIO
+    pdf_file = BytesIO(pdf_bytes)
+    
+    # Parse the resume (parse() internally calls extract_text_from_pdf)
+    parsed_resume = parser.parse(pdf_file)
+    print_results(parsed_resume)
+    
+    # Encode PDF as base64 for storage
+    rawpdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+    
+    # Prepare experiences as JSON
+    experiences_json = json.dumps(parsed_resume.experience_raw_text) if parsed_resume.experience_raw_text else None
+    
+    # Save to database using Prisma
+    prisma = await get_prisma()
+    
+    # Check if user already has a resume, update or create
+    existing_resume = await prisma.resume.find_unique(where={"userId": user_id})
+    
+    if existing_resume:
+        # Update existing resume
+        await prisma.resume.update(
+            where={"id": existing_resume.id},
+            data={
+                "rawpdf": rawpdf_base64,
+                "skills": parsed_resume.skills_raw_text,
+                "experiences": experiences_json,
+            }
+        )
+    else:
+        # Create new resume
+        await prisma.resume.create(
+            data={
+                "rawpdf": rawpdf_base64,
+                "skills": parsed_resume.skills_raw_text,
+                "experiences": experiences_json,
+                "userId": user_id,
+            }
+        )
+    
+    return parsed_resume
