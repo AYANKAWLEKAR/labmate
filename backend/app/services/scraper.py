@@ -3,6 +3,8 @@ import httpx
 from bs4 import BeautifulSoup
 from typing import List, Dict
 import time
+from pandas._libs.algos import groupsort_indexer
+import requests
 import re
 from urllib.parse import urljoin
 from selenium import webdriver
@@ -11,13 +13,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from project_scraper import ProjectScraper
 import os
 
 
 # Institution-specific scraping configurations
 INSTITUTION_CONFIGS = {
     "Rutgers": {
-        "base_url": "https://www.cs.rutgers.edu/people/faculty",
+        "base_url": " https://www.cs.rutgers.edu/people/professors",
         "method": "beautifulsoup",  # or "selenium"
         "selectors": {
             "professor_container": "div.faculty-member",
@@ -27,17 +30,7 @@ INSTITUTION_CONFIGS = {
             "profile_link": "a",
         },
     },
-    "NJIT": {
-        "base_url": "https://www.njit.edu/faculty",
-        "method": "beautifulsoup",
-        "selectors": {
-            "professor_container": "div.faculty-card, div.professor",
-            "name": "h2, h3, .name",
-            "department": ".department",
-            "research": ".research-interests, .research",
-            "profile_link": "a",
-        },
-    },
+
     "Princeton": {
         "base_url": "https://www.cs.princeton.edu/people/faculty",
         "method": "beautifulsoup",
@@ -49,19 +42,9 @@ INSTITUTION_CONFIGS = {
             "profile_link": "a",
         },
     },
-    "Stevens Institute of Technology": {
-        "base_url": "https://www.stevens.edu/directory/faculty",
-        "method": "beautifulsoup",
-        "selectors": {
-            "professor_container": "div.faculty-member, div.person",
-            "name": "h3, h4",
-            "department": ".department, .school",
-            "research": ".research, .interests",
-            "profile_link": "a",
-        },
-    },
+
     "TCNJ": {
-        "base_url": "https://computerscience.tcnj.edu/faculty/",
+        "base_url": "https://computerscience.tcnj.edu/faculty-profiles/",
         "method": "beautifulsoup",
         "selectors": {
             "professor_container": "div.faculty, article",
@@ -71,18 +54,10 @@ INSTITUTION_CONFIGS = {
             "profile_link": "a",
         },
     },
-    "Seton Hall": {
-        "base_url": "https://www.shu.edu/faculty/",
-        "method": "beautifulsoup",
-        "selectors": {
-            "professor_container": "div.faculty, div.professor",
-            "name": "h3, h4",
-            "department": ".department",
-            "research": ".research, .interests",
-            "profile_link": "a",
-        },
-    },
-}
+
+    }
+
+
 
 
 def get_selenium_driver():
@@ -107,6 +82,130 @@ def get_selenium_driver():
             return webdriver.Chrome(options=options)
         except:
             return None
+
+
+class Scraper:
+    def __init__(self, university: str):
+        self.university = university
+        self.config = INSTITUTION_CONFIGS[university]
+        self.url = self.config["base_url"]
+        self.method = self.config["method"]
+        self.selectors = self.config["selectors"]
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        }
+        self.session = requests.Session()
+
+
+        
+    def scrapeRutgers(self,method) -> List[Dict]:
+
+
+        def scrape_labs(groups: List[str]) -> List[str]:
+
+            research_focus=[]
+            assosciated_labs=[]
+            for lab in groups[:1]:
+                response=requests.get(group)
+                response.raise_for_status()
+                assosciated_labs=[]
+                lab_parser=BeautifulSoup(response.text, "html.parser")
+                body=lab_parser.find("div", class_="article-body")
+                all_labs_header=body.find_all("h2")[-1]
+                lab_ps = all_labs_header.find_next_siblings("p")
+                for p in lab_ps:
+                    link=p.find("a",href=True)
+                    if link:
+                        assosciated_labs.append(link.text.strip())
+                        research_focus=scrape_website(link["href"])
+                return research_focus,assosciated_labs
+
+                    
+
+                
+            return ""
+            
+        def scrape_website(website: str) -> str:
+            response=requests.get(website)
+            response.raise_for_status()
+            website_parser=BeautifulSoup(response.text, "html.parser")
+            ps=ProjectScraper()
+            raw_text=ps.scrape_url(website)
+            
+            return projects
+            
+        professors=[]
+        base_url="https://www.cs.rutgers.edu/"
+        if method=="beautifulsoup":
+
+            response = requests.get(self.url)
+            response.raise_for_status()
+            link_parser=BeautifulSoup(response.text, "html.parser")
+            all_links=set()
+            for link in link_parser.find_all("a", href=True):
+                href=link['href']
+                if "/people/professors/details/" in href:
+                    full_url = urljoin(base_url, href)
+                    all_links.add(full_url)
+            for link in all_links:
+                
+                groups=[]
+                
+                reponse=requests.get(link)
+                reponse.raise_for_status()
+                prof_parser=BeautifulSoup(reponse.text, "html.parser")
+                values_list = prof_parser.find("ul", class_="fields-container")
+                for li in values_list.find_all("li"):
+                    if "name" in li.text.lower():
+                        name=li.find("span","field-value").text.strip()
+                    if "website" in li.text.lower():
+                        website=li.find("span","field-value").text.strip()
+                    if "groups" in li.text.lower():
+                        list_groups=li.find_all("a")
+                        for group in list_groups:
+                            groups.append(group.text.strip())
+                if name:
+                    #goal is to find specific research focus of the professor
+                    #lab group names help with this but in case they aren't listed then we need to scrape the website for the research focus
+                    if not website and groups:
+
+                        research_focus=scrape_labs(groups)
+                        professors.append({
+                            "name": name,
+                            #"groups": groups,
+                            "assosciated_labs": [],
+                            "raw_research_focus": research_focus
+                        })
+                    if not groups and website:
+                        research_focus,assosciated_labs=scrape_website(website)
+                        professors.append({
+                            "name": name,
+                            #"groups":groups,
+                            "assosciated_labs": assosciated_labs,
+                            "raw_research_focus": research_focus
+                        })
+
+                else:
+                    continue
+                time.sleep(1)
+
+        return professors
+
+
+
+            
+
+
+
+
+    def scrapeRutgers(self,method) -> List[Dict]:
+
+    def scrapeTCNJ(self,method) -> List[Dict]:
+        
+
+
+
+
 
 
 def scrape_with_selenium(url: str, config: Dict) -> List[Dict]:
