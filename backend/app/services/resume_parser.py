@@ -48,7 +48,7 @@ class ResumeParser:
             'experience', 'work experience', 'professional experience',
             'employment', 'career', 'work history', 'positions',
             'professional background', 'internships', 'internship',
-            'projects', 'professional experience', 'roles'
+            'projects', 'professional experience', 'roles', 'research experience'
         }
         
         self.education_keywords = {
@@ -63,19 +63,29 @@ class ResumeParser:
             ngram_range=(1, 2)
         )
     
-    def extract_text_from_pdf(self, file) -> Tuple[str, Dict]:
+    def extract_text_from_pdf(self, pdf_input) -> Tuple[str, Dict]:
         """
-        Extract text from PDF file-like object with structure preservation.
+        Extract text from PDF bytes or file-like object with structure preservation.
         
         Args:
-            file: a file-like object containing the PDF (e.g., from Flask's request.files["file"])
-            
+            pdf_input: Either bytes (from FastAPI UploadFile) or a file-like object containing the PDF
+                
         Returns:
             Tuple of (full_text, block_info with positions)
         """
-        # Read from file object (buffer), fitz can read from bytes
-        file.seek(0)
-        pdf_document = fitz.open(stream=file.read(), filetype="pdf")
+        # Handle both bytes and file-like objects
+        if isinstance(pdf_input, bytes):
+            # Direct bytes input (from FastAPI UploadFile.read())
+            pdf_bytes = pdf_input
+        elif hasattr(pdf_input, 'read'):
+            # File-like object (BytesIO, file object, etc.)
+            pdf_input.seek(0)  # Reset position in case it was already read
+            pdf_bytes = pdf_input.read()
+        else:
+            raise TypeError(f"Expected bytes or file-like object, got {type(pdf_input)}")
+        
+        # PyMuPDF can open directly from bytes
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
         full_text = ""
         block_info = defaultdict(list)
         
@@ -155,10 +165,20 @@ class ResumeParser:
         line = line.strip()
         
         if not line or len(line) > 50:
+            print("line not there or too long to be header")
             return False
         
         # Check if mostly uppercase or title case
-        upper_ratio = sum(1 for c in line if c.isupper()) / len([c for c in line if c.isalpha()])
+        all_chars=[c for c in line]
+        print("all chars:",all_chars)
+        print("lenght of line", len(all_chars))
+
+        if len(all_chars)==0:
+          
+          return False
+
+
+        upper_ratio = sum(1 for c in line if (c.isupper() and c.isalpha())) / len([c for c in line])
         if upper_ratio < 0.6:
             return False
         
@@ -179,10 +199,13 @@ class ResumeParser:
         
         for keyword in self.experience_keywords:
             if keyword in section_name_lower:
+                print("section_name is EXPERIENCE : ", section_name_lower)
+
                 return "EXPERIENCE"
         
         for keyword in self.education_keywords:
             if keyword in section_name_lower:
+                print("section_name is EXPERIENCE : ", section_name_lower)
                 return "EDUCATION"
         
         # Semantic similarity fallback
@@ -304,6 +327,8 @@ class ResumeParser:
                 experiences.append(entry)
         
         return experiences
+   
+      
     
     def parse(self, pdf_file) -> ParsedResume:
         """
@@ -328,10 +353,10 @@ class ResumeParser:
         
         # Step 3: Identify section types
         section_mapping = {}
-        skills_section_name = None
-        experience_section_name = None
-        skills_text = ""
-        experience_text = ""
+        skills_section_names = None
+        experience_section_names = None
+        skills_text = {}
+        experience_text = {}
         
         for section_name, section_content in sections.items():
             section_type = self.identify_section_type(section_name, section_content)
@@ -340,11 +365,11 @@ class ResumeParser:
             print(f"  → {section_name}: {section_type}")
             
             if section_type == "SKILLS":
-                skills_section_name = section_name
-                skills_text = section_content
+               skills_section_name += [section_name]
+               skills_text[section_name] = section_content
             elif section_type == "EXPERIENCE":
-                experience_section_name = section_name
-                experience_text = section_content
+                experience_section_name += [section_name]
+                experience_text[section_name]= section_content
         
         # Step 4: Extract structured data
         skills = self.extract_skills(skills_text)
@@ -361,6 +386,9 @@ class ResumeParser:
             all_sections=sections,
             section_mapping=section_mapping
         )
+
+
+
 
 
 def print_results(result: ParsedResume) -> None:
@@ -413,10 +441,10 @@ async def parse_resume(pdf_bytes: bytes, user_id: str) -> ParsedResume:
     
     # Create a file-like object from bytes for parsing
     from io import BytesIO
-    pdf_file = BytesIO(pdf_bytes)
+    #pdf_file = BytesIO(pdf_bytes)
     
     # Parse the resume (parse() internally calls extract_text_from_pdf)
-    parsed_resume = parser.parse(pdf_file)
+    parsed_resume = parser.parse(pdf_bytes)
     print_results(parsed_resume)
     
     # Encode PDF as base64 for storage
@@ -425,6 +453,7 @@ async def parse_resume(pdf_bytes: bytes, user_id: str) -> ParsedResume:
     # Prepare experiences as JSON
     experiences_json = json.dumps(parsed_resume.experience_raw_text) if parsed_resume.experience_raw_text else None
     
+    skills_json = json.dumps(parsed_resume.skills_raw_text) if parsed_resume.skills_raw_text else None
     # Save to database using Prisma
     prisma = await get_prisma()
     
@@ -437,7 +466,7 @@ async def parse_resume(pdf_bytes: bytes, user_id: str) -> ParsedResume:
             where={"id": existing_resume.id},
             data={
                 "rawpdf": rawpdf_base64,
-                "skills": parsed_resume.skills_raw_text,
+                "skills": parsed_resume.skills_json,
                 "experiences": experiences_json,
             }
         )
