@@ -276,7 +276,6 @@ def print_results(results: List[Dict]) -> None:
 
 
 
-class MachineLearningProjectScraper:
 
     #chunk site and use llm to extract gist of the page. Can either be done on the main page or on the projects page
     

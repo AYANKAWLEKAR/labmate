@@ -13,7 +13,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
-from project_scraper import ProjectScraper
+
+from dotenv import load_dotenv
+
+
+
+from llama_index.core import SummaryIndex, Settings
+from llama_index.readers.web import SimpleWebPageReader
+from llama_index.llms.groq import Groq
 import os
 
 
@@ -58,6 +65,15 @@ INSTITUTION_CONFIGS = {
     }
 
 
+SUMMARY_PROMPT="""
+
+You are a helpful assistant that summarizes research lab or professor's personal websites.
+Identify any distinct projects that this research lab or professor is working on and their main focus.
+This includes past publications
+Return a concise summary of the projects with important details. Return in a list format.
+
+"""
+
 
 
 def get_selenium_driver():
@@ -95,14 +111,40 @@ class Scraper:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
         }
         self.session = requests.Session()
+    
+    def find_projects_from_website(self, url:str) ->str:
 
+        load_dotenv()
+        GROQ_API_KEY=os.environ.get("GROQ_API_KEY")
+        if not GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY is not set")
 
+        #use SummaryIndex to summarize the entire website
+        llm = Groq(
+    model="llama3-70b-8192",
+    temperature=0.1,
+    api_key=GROQ_API_KEY
+)
+        Settings.llm=llm
+
+        documents = SimpleWebPageReader(html_to_text=True).load_data([url])
+        index = SummaryIndex(documents, show_progress=True)
+        query_engine = index.as_query_engine(response_mode="tree_summarize")
+        summary=query_engine.query(SUMMARY_PROMPT)
         
+       
+        return summary
+
     def scrapeRutgers(self,method) -> List[Dict]:
+
+        #each department page has a list of professors
+        #each professor has a website that talks about their research
+        #some professors have descriptions of their research but not a website
 
 
         def scrape_labs(groups: List[str]) -> List[str]:
-
+            # scrapes the labs a professor is assosciated with and returns the name and research_focus of the lab
+            # research_focus gives overview and projects the lab is workingon
             research_focus=[]
             assosciated_labs=[]
             for lab in groups[:1]:
@@ -117,25 +159,16 @@ class Scraper:
                     link=p.find("a",href=True)
                     if link:
                         assosciated_labs.append(link.text.strip())
-                        research_focus=scrape_website(link["href"])
+                        research_focus=self.find_projects_from_website(link["href"])
                 return research_focus,assosciated_labs
 
                     
 
                 
-            return ""
             
-        def scrape_website(website: str) -> str:
-            response=requests.get(website)
-            response.raise_for_status()
-            website_parser=BeautifulSoup(response.text, "html.parser")
-            ps=ProjectScraper()
-            raw_text=ps.scrape_url(website)
-            
-            return projects
             
         professors=[]
-        base_url="https://www.cs.rutgers.edu/"
+        base_url="https://www.cs.rutgers.edu/" #starting with computer science department as base url
         if method=="beautifulsoup":
 
             response = requests.get(self.url)
@@ -151,7 +184,7 @@ class Scraper:
                 
                 groups=[]
                 
-                reponse=requests.get(link)
+                reponse=requests.get(link) # enters professor page: each page is the same layout
                 reponse.raise_for_status()
                 prof_parser=BeautifulSoup(reponse.text, "html.parser")
                 values_list = prof_parser.find("ul", class_="fields-container")
@@ -164,26 +197,58 @@ class Scraper:
                         list_groups=li.find_all("a")
                         for group in list_groups:
                             groups.append(group.text.strip())
+                paragraphs_after_ul = []
+                for sibling in values_list.find_next_siblings():
+                    if sibling.name == "p":
+                        paragraphs_after_ul.append(sibling)
+                description = None
+                if paragraphs_after_ul:
+                    description = " ".join([p.get_text(strip=True) for p in paragraphs_after_ul])
                 if name:
                     #goal is to find specific research focus of the professor
                     #lab group names help with this but in case they aren't listed then we need to scrape the website for the research focus
-                    if not website and groups:
+                    
+                    if website:
 
-                        research_focus=scrape_labs(groups)
-                        professors.append({
-                            "name": name,
-                            #"groups": groups,
-                            "assosciated_labs": [],
-                            "raw_research_focus": research_focus
-                        })
-                    if not groups and website:
-                        research_focus,assosciated_labs=scrape_website(website)
-                        professors.append({
-                            "name": name,
-                            #"groups":groups,
-                            "assosciated_labs": assosciated_labs,
-                            "raw_research_focus": research_focus
-                        })
+                        if groups:
+
+                            research_focus=scrape_labs(groups)
+                            professors.append({
+                                "name": name,
+                                #"groups": groups,
+                                "assosciated_labs": [],
+                                "raw_research_focus": research_focus
+                            })
+                        else :
+                            research_focus=self.find_projects_from_website(website)
+                            professors.append({
+                                "name": name,
+                                #"groups":groups,
+                                "assosciated_labs": [],
+                                "raw_research_focus": research_focus
+                            })
+                    else:
+                        if groups:
+                            research_focus=scrape_labs(groups)
+                            professors.append({
+                                "name": name,
+                                #"groups": groups,
+                                "assosciated_labs": [],
+                                "raw_research_focus": research_focus
+                            })
+                        elif description:
+                            research_focus=description
+                            professors.append({
+                                "name": name,
+                                #"groups":groups,
+                                "assosciated_labs": [],
+                                "raw_research_focus": research_focus
+                            })
+                        else:
+                            continue
+                            
+
+
 
                 else:
                     continue
@@ -197,10 +262,6 @@ class Scraper:
 
 
 
-
-    def scrapeRutgers(self,method) -> List[Dict]:
-
-    def scrapeTCNJ(self,method) -> List[Dict]:
         
 
 
