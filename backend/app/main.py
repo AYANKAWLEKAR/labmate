@@ -14,8 +14,6 @@ from .db import get_prisma, close_prisma
 
 load_dotenv()
 
-app = FastAPI(title="Labmate API", version="1.0.0")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,12 +40,7 @@ app.add_middleware(
 )
 
 ALLOWED_INSTITUTIONS = [
-    "Rutgers",
-    "NJIT",
-    "Princeton",
-    "Stevens Institute of Technology",
-    "TCNJ",
-    "Seton Hall",
+    "Rutgers",  # Only Rutgers is currently supported
 ]
 
 
@@ -84,6 +77,7 @@ async def health_check():
 @app.post("/match", response_model=MatchResponse)
 async def match_professors(
     institutions: List[str] = Query(..., description="List of institutions to search"),
+    research_interests: List[str] = Query(..., description="Research interests for department matching"),
     resume: UploadFile = File(..., description="Resume PDF file"),
     user_id: Optional[str] = Header(None, alias="X-User-Id", description="User ID from session"),
 ):
@@ -121,9 +115,12 @@ async def match_professors(
             status_code=500, detail=f"Failed to parse resume: {str(e)}"
         )
 
+    if not research_interests:
+        raise HTTPException(status_code=400, detail="Research interests are required")
+
     # Scrape institutions
     try:
-        professors_df = await scrape_institutions(institutions)
+        professors_df = await scrape_institutions(institutions, research_interests)
         if professors_df.empty:
             raise HTTPException(
                 status_code=500,

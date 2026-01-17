@@ -1,27 +1,24 @@
 import pandas as pd
 import httpx
 from bs4 import BeautifulSoup
-from typing import List, Dict
-import time
-from pandas._libs.algos import groupsort_indexer
-import requests
+from typing import List, Dict, Optional
+import asyncio
 import re
 from urllib.parse import urljoin
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
-
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-
-
-
 from llama_index.core import SummaryIndex, Settings
 from llama_index.readers.web import SimpleWebPageReader
 from llama_index.llms.groq import Groq
 import os
+
+from .department_matcher import match_research_interests_to_department
+from ..db import get_prisma
+
+load_dotenv()
+
+# Load GROQ API key from environment
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 # Institution-specific scraping configurations
@@ -64,6 +61,7 @@ INSTITUTION_CONFIGS = {
 
     }
 
+MODEL_NAME="llama-3.1-8b-instant"
 
 SUMMARY_PROMPT="""
 
@@ -76,382 +74,403 @@ Return a concise summary of the projects with important details. Return in a lis
 
 
 
-def get_selenium_driver():
-    """Initialize Selenium WebDriver with headless Chrome."""
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument(
-        "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    )
-    
-    try:
-        driver = webdriver.Chrome(options=options)
-        return driver
-    except WebDriverException:
-        # Fallback: try without headless if Chrome not available
-        options.remove_argument("--headless")
-        try:
-            return webdriver.Chrome(options=options)
-        except:
-            return None
-
 
 class Scraper:
-    def __init__(self, university: str):
-        self.university = university
-        self.config = INSTITUTION_CONFIGS[university]
-        self.url = self.config["base_url"]
-        self.method = self.config["method"]
-        self.selectors = self.config["selectors"]
+    def __init__(self):
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
         }
-        self.session = requests.Session()
-    
-    def find_projects_from_website(self, url:str) ->str:
+        self.client = httpx.AsyncClient(timeout=30.0, headers=self.headers)
 
-        load_dotenv()
-        GROQ_API_KEY=os.environ.get("GROQ_API_KEY")
+    async def find_projects_from_website(self, url: str) -> str:
+        print(f"\n[DEBUG] find_projects_from_website called with URL: {url}")
+        
         if not GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY is not set")
 
-        #use SummaryIndex to summarize the entire website
-        llm = Groq(
-    model="llama3-70b-8192",
-    temperature=0.1,
-    api_key=GROQ_API_KEY
-)
-        Settings.llm=llm
+        try:
+            # Run synchronous llama_index operations in thread pool
+            def _process_website():
+                llm = Groq(
+                    model=MODEL_NAME,
+                    temperature=0.1,
+                    api_key=GROQ_API_KEY
+                )
+                Settings.llm = llm
 
-        documents = SimpleWebPageReader(html_to_text=True).load_data([url])
-        index = SummaryIndex(documents, show_progress=True)
-        query_engine = index.as_query_engine(response_mode="tree_summarize")
-        summary=query_engine.query(SUMMARY_PROMPT)
-        
-       
-        return summary
-
-    def scrapeRutgers(self,method) -> List[Dict]:
-
-        #each department page has a list of professors
-        #each professor has a website that talks about their research
-        #some professors have descriptions of their research but not a website
-
-
-        def scrape_labs(groups: List[str]) -> List[str]:
-            # scrapes the labs a professor is assosciated with and returns the name and research_focus of the lab
-            # research_focus gives overview and projects the lab is workingon
-            research_focus=[]
-            assosciated_labs=[]
-            for lab in groups[:1]:
-                response=requests.get(group)
-                response.raise_for_status()
-                assosciated_labs=[]
-                lab_parser=BeautifulSoup(response.text, "html.parser")
-                body=lab_parser.find("div", class_="article-body")
-                all_labs_header=body.find_all("h2")[-1]
-                lab_ps = all_labs_header.find_next_siblings("p")
-                for p in lab_ps:
-                    link=p.find("a",href=True)
-                    if link:
-                        assosciated_labs.append(link.text.strip())
-                        research_focus=self.find_projects_from_website(link["href"])
-                return research_focus,assosciated_labs
-
-                    
-
+                print(f"[DEBUG] Loading documents from URL...")
+                documents = SimpleWebPageReader(html_to_text=True).load_data([url])
+                print(f"[DEBUG] Documents loaded: {len(documents)} documents")
                 
+                index = SummaryIndex(documents, show_progress=True)
+                query_engine = index.as_query_engine(response_mode="tree_summarize")
+                summary = query_engine.query(SUMMARY_PROMPT)
+                return summary
             
-            
-        professors=[]
-        base_url="https://www.cs.rutgers.edu/" #starting with computer science department as base url
-        if method=="beautifulsoup":
+            summary = await asyncio.to_thread(_process_website)
+            print(f"[DEBUG] Summary generated successfully")
+            return str(summary)
+        except Exception as e:
+            print(f"[ERROR] find_projects_from_website failed: {type(e).__name__}: {e}")
+            return ""
 
-            response = requests.get(self.url)
-            response.raise_for_status()
-            link_parser=BeautifulSoup(response.text, "html.parser")
-            all_links=set()
+    async def scrapeRutgers(self, method: str = "beautifulsoup", department_url: Optional[str] = None) -> List[Dict]:
+        print(f"\n[DEBUG] Starting scrapeRutgers with method: {method}")
+
+        async def scrape_labs(groups: List[str]) -> tuple:
+            print(f"\n[DEBUG] scrape_labs called with {len(groups)} groups")
+            research_focus = []
+            assosciated_labs = []
+            
+            for idx, lab in enumerate(groups[:1]):
+                print(f"[DEBUG] Processing lab {idx + 1}/{len(groups[:1])}: {lab}")
+                try:
+                    response = await self.client.get(lab)
+                    response.raise_for_status()
+                    print(f"[DEBUG] Lab page loaded successfully")
+                    
+                    lab_parser = BeautifulSoup(response.text, "html.parser")
+                    body = lab_parser.find("div", class_="article-body")
+                    
+                    if body is None:
+                        print(f"[WARNING] No div with class 'article-body' found for lab: {lab}")
+                        continue
+                    
+                    print(f"[DEBUG] Found article-body div")
+                    all_labs_header = body.find_all("h2")
+                    
+                    if not all_labs_header:
+                        print(f"[WARNING] No h2 tags found in article-body for lab: {lab}")
+                        continue
+                    
+                    print(f"[DEBUG] Found {len(all_labs_header)} h2 tags")
+                    last_header = all_labs_header[-1]
+                    lab_ps = last_header.find_next_siblings("p")
+                    print(f"[DEBUG] Found {len(lab_ps)} p tags after last h2")
+                    
+                    for p_idx, p in enumerate(lab_ps):
+                        link = p.find("a", href=True)
+                        if link:
+                            lab_name = link.text.strip()
+                            lab_href = link["href"]
+                            print(f"[DEBUG] Found lab link {p_idx + 1}: {lab_name} -> {lab_href}")
+                            assosciated_labs.append(lab_name)
+                            research_focus = await self.find_projects_from_website(lab_href)
+                        else:
+                            print(f"[DEBUG] No link found in p tag {p_idx + 1}")
+                            
+                except Exception as e:
+                    print(f"[ERROR] Failed to scrape lab {lab}: {type(e).__name__}: {e}")
+                    
+            return research_focus, assosciated_labs
+
+        professors = []
+        base_url = "https://www.cs.rutgers.edu/"
+        faculty_url = department_url or "https://www.cs.rutgers.edu/people/professors"
+        
+        if method == "beautifulsoup":
+            print(f"\n[DEBUG] Fetching faculty page: {faculty_url}")
+            
+            try:
+                response = await self.client.get(faculty_url)
+                response.raise_for_status()
+                print(f"[DEBUG] Faculty page loaded successfully")
+            except Exception as e:
+                print(f"[ERROR] Failed to load faculty page: {type(e).__name__}: {e}")
+                return professors
+
+            link_parser = BeautifulSoup(response.text, "html.parser")
+            all_links = set()
+            
             for link in link_parser.find_all("a", href=True):
-                href=link['href']
+                href = link['href']
                 if "/people/professors/details/" in href:
                     full_url = urljoin(base_url, href)
                     all_links.add(full_url)
-            for link in all_links:
+            
+            print(f"[DEBUG] Found {len(all_links)} professor profile links")
+            
+            prisma = await get_prisma()
+            for link_idx, link in enumerate(all_links, 1):
+                print(f"\n[DEBUG] ===== Processing professor {link_idx}/{len(all_links)} =====")
+                print(f"[DEBUG] Profile URL: {link}")
                 
-                groups=[]
-                
-                reponse=requests.get(link) # enters professor page: each page is the same layout
-                reponse.raise_for_status()
-                prof_parser=BeautifulSoup(reponse.text, "html.parser")
+                name = None
+                website = None
+                groups = []
+                description = None
+
+                try:
+                    response = await self.client.get(link)
+                    response.raise_for_status()
+                    print(f"[DEBUG] Professor page loaded successfully")
+                except Exception as e:
+                    print(f"[ERROR] Failed to load professor page: {type(e).__name__}: {e}")
+                    continue
+
+                prof_parser = BeautifulSoup(response.text, "html.parser")
                 values_list = prof_parser.find("ul", class_="fields-container")
+                
+                if values_list is None:
+                    print(f"[WARNING] No ul with class 'fields-container' found")
+                    continue
+                
+                print(f"[DEBUG] Found fields-container ul")
+                
                 for li in values_list.find_all("li"):
-                    if "name" in li.text.lower():
-                        name=li.find("span","field-value").text.strip()
-                    if "website" in li.text.lower():
-                        website=li.find("span","field-value").text.strip()
-                    if "groups" in li.text.lower():
-                        list_groups=li.find_all("a")
-                        for group in list_groups:
-                            groups.append(group.text.strip())
+                    li_class = li.get("class",[])
+                    print(f"[DEBUG] Processing li... elements found: {len(li_class)}...")
+                    has_name=False
+                    for c in li_class:
+                      
+                      if "name" in c.lower():
+                          field_value = li.find("span", "field-value")
+                          if field_value is None:
+                              print(f"[WARNING] 'name' field found but no span with class 'field-value'")
+                          else:
+                              name = field_value.text.strip()
+                              print(f"[DEBUG] Found name: {name}")
+                      
+                      elif "website" in c.lower():
+                          field_value = li.find("span", "field-value")
+
+                          if field_value is None:
+                              print(f"[WARNING] 'website' field found but no span with class 'field-value'")
+                          else:
+                              weblink = field_value.find("a",href=True)
+                              website=weblink["href"]
+                              print(f"[DEBUG] Found website: {website}")
+                      
+                      elif "groups" in c.lower():
+                          list_groups = li.find_all("a",href=True)
+                          print(f"[DEBUG] Found {len(list_groups)} group links")
+                          for group in list_groups:
+                              group_text = group["href"]
+                              groups.append(group_text)
+                              print(f"[DEBUG] Added group: {group_text}")
+                      
+
+                
+                # Find description
                 paragraphs_after_ul = []
                 for sibling in values_list.find_next_siblings():
                     if sibling.name == "p":
                         paragraphs_after_ul.append(sibling)
-                description = None
+                
                 if paragraphs_after_ul:
                     description = " ".join([p.get_text(strip=True) for p in paragraphs_after_ul])
+                    print(f"[DEBUG] Found description: {description[:100]}...")
+                else:
+                    print(f"[DEBUG] No description paragraphs found")
+                
                 if name:
-                    #goal is to find specific research focus of the professor
-                    #lab group names help with this but in case they aren't listed then we need to scrape the website for the research focus
+                    cached_professor = await prisma.professor.find_first(
+                        where={
+                            "name": name,
+                            "department": "Computer Science",
+                            "institution": "Rutgers",
+                        }
+                    )
+                    if cached_professor:
+                        print(f"[DEBUG] Professor cached, skipping scrape: {name}")
+                        professors.append({
+                            "name": cached_professor.name,
+                            "assosciated_labs": cached_professor.labGroup.split(", ") if cached_professor.labGroup else [],
+                            "raw_research_focus": cached_professor.researchFocus,
+                        })
+                        await asyncio.sleep(0.1)
+                        continue
+
+                    print(f"[DEBUG] Processing professor: {name}")
                     
                     if website:
-
+                        print(f"[DEBUG] Professor has website: {website}")
                         if groups:
-
-                            research_focus=scrape_labs(groups)
+                            print(f"[DEBUG] Professor has groups, scraping labs...")
+                            research_focus, assosciated_labs = await scrape_labs(groups)
                             professors.append({
                                 "name": name,
-                                #"groups": groups,
-                                "assosciated_labs": [],
+                                "assosciated_labs": assosciated_labs,
                                 "raw_research_focus": research_focus
                             })
-                        else :
-                            research_focus=self.find_projects_from_website(website)
+                        else:
+                            print(f"[DEBUG] No groups, scraping website directly...")
+                            research_focus = await self.find_projects_from_website(website)
                             professors.append({
                                 "name": name,
-                                #"groups":groups,
                                 "assosciated_labs": [],
                                 "raw_research_focus": research_focus
                             })
                     else:
+                        print(f"[DEBUG] Professor has no website")
                         if groups:
-                            research_focus=scrape_labs(groups)
+                            print(f"[DEBUG] Has groups, scraping labs...")
+                            research_focus, assosciated_labs = await scrape_labs(groups)
                             professors.append({
                                 "name": name,
-                                #"groups": groups,
-                                "assosciated_labs": [],
+                                "assosciated_labs": assosciated_labs,
                                 "raw_research_focus": research_focus
                             })
                         elif description:
-                            research_focus=description
+                            print(f"[DEBUG] Using description as research focus")
+                            research_focus = description
                             professors.append({
                                 "name": name,
-                                #"groups":groups,
                                 "assosciated_labs": [],
                                 "raw_research_focus": research_focus
                             })
                         else:
+                            print(f"[WARNING] Professor has no website, groups, or description - skipping")
                             continue
-                            
-
-
-
+                    
+                    print(f"[DEBUG] Added professor: {name}")
                 else:
+                    print(f"[WARNING] No name found for professor - skipping")
                     continue
-                time.sleep(1)
+                
+                await asyncio.sleep(1)  # Rate limiting
+                print(f"[DEBUG] Total professors collected so far: {len(professors)}")
 
+        print(f"\n[DEBUG] ===== scrapeRutgers completed =====")
+        print(f"[DEBUG] Total professors collected: {len(professors)}")
         return professors
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.client.aclose()
 
 
-            
-
-
-
-        
-
-
-
-
-
-
-def scrape_with_selenium(url: str, config: Dict) -> List[Dict]:
-    """Scrape using Selenium for JavaScript-rendered content."""
-    driver = get_selenium_driver()
-    if not driver:
-        return []
+# Async function to scrape institutions and return DataFrame
+async def scrape_institutions(institutions: List[str], research_interests: List[str]) -> pd.DataFrame:
+    """
+    Scrape professors from specified institutions.
+    Currently only supports Rutgers.
     
-    professors = []
-    try:
-        driver.get(url)
-        time.sleep(3)  # Wait for page load
+    Args:
+        institutions: List of institution names to scrape
         
-        # Wait for professor containers
-        wait = WebDriverWait(driver, 10)
-        containers = wait.until(
-            EC.presence_of_all_elements_located(
-                (By.CSS_SELECTOR, config["selectors"]["professor_container"])
-            )
-        )
-        
-        for container in containers[:20]:  # Limit to 20
-            try:
-                name_elem = container.find_element(
-                    By.CSS_SELECTOR, config["selectors"]["name"]
-                )
-                name = name_elem.text.strip()
-                
-                dept_elem = container.find_element(
-                    By.CSS_SELECTOR, config["selectors"]["department"]
-                )
-                department = dept_elem.text.strip()
-                
-                research_elem = container.find_element(
-                    By.CSS_SELECTOR, config["selectors"]["research"]
-                )
-                research = research_elem.text.strip()
-                
-                link_elem = container.find_element(
-                    By.CSS_SELECTOR, config["selectors"]["profile_link"]
-                )
-                profile_url = link_elem.get_attribute("href") or ""
-                
-                professors.append({
-                    "name": name,
-                    "department": department,
-                    "research_focus": research,
-                    "profile_url": profile_url,
-                })
-            except Exception:
+    Returns:
+        pandas DataFrame with columns: id, name, institution, department, research_focus, lab_group, profile_url
+    """
+    async with Scraper() as scraper:
+        all_professors = []
+        prisma = await get_prisma()
+
+        for institution in institutions:
+            if institution != "Rutgers":
+                print(f"[WARNING] Institution '{institution}' not yet supported. Only 'Rutgers' is supported.")
                 continue
-                
-    except TimeoutException:
-        pass
-    finally:
-        driver.quit()
-    
-    return professors
 
+            department_url = match_research_interests_to_department(research_interests, institution)
+            if not department_url:
+                print("[WARNING] No department match found for research interests.")
+                continue
 
-async def scrape_with_beautifulsoup(url: str, config: Dict) -> List[Dict]:
-    """Scrape using BeautifulSoup for static HTML content."""
-    professors = []
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                },
+            cached_department = await prisma.department.find_unique(
+                where={"url": department_url},
+                include={"professors": True},
             )
-            response.raise_for_status()
-            html = response.text
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-        return professors
-    
-    soup = BeautifulSoup(html, "lxml")
-    
-    # Try to find professor containers
-    containers = soup.select(config["selectors"]["professor_container"])
-    
-    if not containers:
-        # Fallback: try common patterns
-        containers = soup.find_all("div", class_=re.compile(r"faculty|professor|person", re.I))
-    
-    for container in containers[:20]:  # Limit to 20
-        try:
-            # Extract name
-            name_elem = container.select_one(config["selectors"]["name"])
-            if not name_elem:
-                name_elem = container.find("h2") or container.find("h3") or container.find("h4")
-            name = name_elem.get_text(strip=True) if name_elem else "Unknown"
-            
-            # Extract department
-            dept_elem = container.select_one(config["selectors"]["department"])
-            if not dept_elem:
-                dept_elem = container.find(class_=re.compile(r"dept|department|school", re.I))
-            department = dept_elem.get_text(strip=True) if dept_elem else "Unknown"
-            
-            # Extract research focus
-            research_elem = container.select_one(config["selectors"]["research"])
-            if not research_elem:
-                research_elem = container.find(class_=re.compile(r"research|interest|focus", re.I))
-            research = research_elem.get_text(strip=True) if research_elem else "Research interests not specified"
-            
-            # Extract profile link
-            link_elem = container.select_one(config["selectors"]["profile_link"])
-            if link_elem:
-                profile_url = link_elem.get("href", "")
-                if profile_url and not profile_url.startswith("http"):
-                    # Make absolute URL
-                    profile_url = urljoin(url, profile_url)
-            else:
-                profile_url = ""
-            
-            if name and name != "Unknown":
-                professors.append({
-                    "name": name,
-                    "department": department,
-                    "research_focus": research,
-                    "profile_url": profile_url,
+
+            if cached_department:
+                for prof in cached_department.professors:
+                    all_professors.append({
+                        "id": prof.id,
+                        "name": prof.name,
+                        "institution": prof.institution,
+                        "department": prof.department,
+                        "research_focus": prof.researchFocus,
+                        "lab_group": prof.labGroup,
+                        "profile_url": prof.profileUrl,
+                    })
+                continue
+
+            professors = await scraper.scrapeRutgers(method="beautifulsoup", department_url=department_url)
+
+            department_record = await save_department_to_db(
+                institution=institution,
+                department_name="Computer Science",
+                url=department_url,
+            )
+
+            for prof in professors:
+                research_focus = str(prof.get("raw_research_focus", ""))
+                if hasattr(research_focus, "response"):
+                    research_focus = str(research_focus.response) if hasattr(research_focus, "response") else str(research_focus)
+
+                professor_record = await save_professor_to_db(
+                    professor_data={
+                        "name": prof.get("name", ""),
+                        "institution": "Rutgers",
+                        "department": "Computer Science",
+                        "research_focus": research_focus,
+                        "lab_group": ", ".join(prof.get("assosciated_labs", [])) if prof.get("assosciated_labs") else None,
+                        "profile_url": None,
+                    },
+                    department_id=department_record.id,
+                )
+
+                all_professors.append({
+                    "id": professor_record.id,
+                    "name": professor_record.name,
+                    "institution": professor_record.institution,
+                    "department": professor_record.department,
+                    "research_focus": professor_record.researchFocus,
+                    "lab_group": professor_record.labGroup,
+                    "profile_url": professor_record.profileUrl,
                 })
-        except Exception:
-            continue
-    
-    return professors
+
+        if not all_professors:
+            return pd.DataFrame(columns=["id", "name", "institution", "department", "research_focus", "lab_group", "profile_url"])
+
+        return pd.DataFrame(all_professors)
 
 
-async def scrape_single_institution(institution: str) -> List[Dict]:
-    """Scrape a single institution's faculty page."""
-    if institution not in INSTITUTION_CONFIGS:
-        return []
-    
-    config = INSTITUTION_CONFIGS[institution]
-    url = config["base_url"]
-    method = config.get("method", "beautifulsoup")
-    
-    if method == "selenium":
-        professors = scrape_with_selenium(url, config)
-    else:
-        professors = await scrape_with_beautifulsoup(url, config)
-    
-    # Add institution to each professor
-    for prof in professors:
-        prof["institution"] = institution
-        prof["id"] = f"{institution}_{prof['name']}".replace(" ", "_").lower()
-        prof["lab_group"] = None  # Can be enhanced later
-    
-    return professors
+async def save_department_to_db(institution: str, department_name: str, url: str):
+    prisma = await get_prisma()
+    department = await prisma.department.upsert(
+        where={"url": url},
+        data={
+            "create": {
+                "institution": institution,
+                "departmentName": department_name,
+                "url": url,
+                "lastScrapedAt": datetime.now(timezone.utc),
+            },
+            "update": {
+                "lastScrapedAt": datetime.now(timezone.utc),
+            },
+        },
+    )
+    return department
 
 
-async def scrape_institutions(institutions: List[str]) -> pd.DataFrame:
-    """
-    Scrape multiple institutions and return a pandas DataFrame.
-    Limits to 20 professors total across all institutions.
-    """
-    all_professors = []
-    
-    for institution in institutions:
-        print(f"Scraping {institution}...")
-        professors = await scrape_single_institution(institution)
-        all_professors.extend(professors)
-        time.sleep(2)  # Be respectful with rate limiting
-    
-    # Convert to DataFrame
-    if not all_professors:
-        # Return empty DataFrame with expected columns
-        return pd.DataFrame(columns=[
-            "id", "name", "institution", "department", 
-            "research_focus", "lab_group", "profile_url"
-        ])
-    
-    df = pd.DataFrame(all_professors)
-    
-    # Limit to 20 professors total
-    if len(df) > 20:
-        df = df.head(20)
-    
-    # Ensure all required columns exist
-    required_cols = ["id", "name", "institution", "department", "research_focus", "lab_group", "profile_url"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = None
-    
-    return df[required_cols]
+async def save_professor_to_db(professor_data: Dict, department_id: str):
+    prisma = await get_prisma()
+    professor = await prisma.professor.upsert(
+        where={
+            "name_departmentId": {
+                "name": professor_data["name"],
+                "departmentId": department_id,
+            }
+        },
+        data={
+            "create": {
+                "name": professor_data["name"],
+                "institution": professor_data["institution"],
+                "department": professor_data["department"],
+                "researchFocus": professor_data["research_focus"],
+                "labGroup": professor_data.get("lab_group"),
+                "profileUrl": professor_data.get("profile_url"),
+                "departmentId": department_id,
+            },
+            "update": {
+                "researchFocus": professor_data["research_focus"],
+                "labGroup": professor_data.get("lab_group"),
+                "profileUrl": professor_data.get("profile_url"),
+            },
+        },
+    )
+    return professor
 

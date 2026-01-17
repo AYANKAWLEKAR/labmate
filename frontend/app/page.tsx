@@ -35,6 +35,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [selectedInstitutions, setSelectedInstitutions] = useState<string[]>([]);
+  const [researchInterests, setResearchInterests] = useState("");
   const [resumeProfile, setResumeProfile] = useState<any>(null);
   const [professors, setProfessors] = useState<Professor[]>([]);
   const [selectedProfessor, setSelectedProfessor] = useState<Professor | null>(null);
@@ -57,8 +58,13 @@ export default function HomePage() {
   };
 
   const handleMatch = async () => {
-    if (!resumeFile || selectedInstitutions.length === 0) {
-      setError("Please upload a resume and select at least one institution");
+    const interestsList = researchInterests
+      .split(",")
+      .map((interest) => interest.trim())
+      .filter(Boolean);
+
+    if (!resumeFile || selectedInstitutions.length === 0 || interestsList.length === 0) {
+      setError("Please upload a resume, enter research interests, and select at least one institution");
       return;
     }
 
@@ -73,7 +79,10 @@ export default function HomePage() {
       const institutionsParam = selectedInstitutions
         .map((inst) => `institutions=${encodeURIComponent(inst)}`)
         .join("&");
-      const url = `${API_BASE_URL}/match?${institutionsParam}`;
+      const interestsParam = interestsList
+        .map((interest) => `research_interests=${encodeURIComponent(interest)}`)
+        .join("&");
+      const url = `${API_BASE_URL}/match?${institutionsParam}&${interestsParam}`;
 
       const response = await fetch(url, {
         method: "POST",
@@ -178,7 +187,7 @@ export default function HomePage() {
           </div>
         )}
 
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-3">
           <Card>
             <CardHeader>
               <CardTitle>Step 1: Upload Resume</CardTitle>
@@ -205,7 +214,26 @@ export default function HomePage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Step 2: Select Institutions</CardTitle>
+              <CardTitle>Step 2: Research Interests</CardTitle>
+              <CardDescription>Enter interests as comma-separated keywords</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <Label htmlFor="researchInterests">Research Interests</Label>
+                <Input
+                  id="researchInterests"
+                  placeholder="AI, machine learning, robotics"
+                  value={researchInterests}
+                  onChange={(e) => setResearchInterests(e.target.value)}
+                  className="mt-2"
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Step 3: Select Institutions</CardTitle>
               <CardDescription>Choose one or more institutions to search</CardDescription>
             </CardHeader>
             <CardContent>

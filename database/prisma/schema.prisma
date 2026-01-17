@@ -58,6 +58,32 @@ model Resume {
   @@map("resumes")
 }
 
+model Department {
+  id              String      @id @default(uuid())
+  institution     String
+  departmentName  String
+  url             String      @unique
+  lastScrapedAt   DateTime
+  professors      Professor[]
+
+  @@map("departments")
+}
+
+model Professor {
+  id             String     @id @default(uuid())
+  name           String
+  institution    String
+  department     String
+  researchFocus  String
+  labGroup       String?
+  profileUrl     String?
+  departmentId   String
+  Department     Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@unique([name, departmentId])
+  @@map("professors")
+}
+
 model VerificationToken {
   identifier String
   token      String   @unique
